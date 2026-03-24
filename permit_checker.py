@@ -31,7 +31,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
-TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-24")   # YYYY-MM-DD
+TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")   # YYYY-MM-DD
 
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
@@ -39,7 +39,7 @@ EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
 SMTP_HOST      = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT      = int(os.environ.get("SMTP_PORT", "587"))
 
-CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "300"))
+CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "60"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
 
 # ─────────────────────────────────────────────
