@@ -4,26 +4,6 @@ Recreation.gov Permit Availability Checker — Railway Edition
 =============================================================
 Monitors Ruby Horsethief Canyon (permit 74466) for campsite cancellations.
 
-Uses the standard permit availability endpoint:
-  /api/permits/{id}/availability/month?start_date=YYYY-MM-01T00:00:00.000Z
-
-Response shape:
-{
-  "payload": {
-    "<division_id>": {
-      "date_availability": {
-        "2026-05-24T00:00:00Z": {
-          "remaining": 2,
-          "total": 4,
-          "is_walkup": false,
-          ...
-        }
-      },
-      "name": "Beavertail 1"
-    }
-  }
-}
-
 Required environment variables:
   EMAIL_SENDER    — Gmail address sending the alert
   EMAIL_PASSWORD  — Gmail App Password (16 chars, no spaces)
@@ -41,6 +21,7 @@ import requests
 import smtplib
 import time
 import logging
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -50,7 +31,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
-TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")   # YYYY-MM-DD
+TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-24")
 
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
@@ -74,7 +55,6 @@ log = logging.getLogger(__name__)
 TARGET_DT   = datetime.strptime(TARGET_DATE, "%Y-%m-%d")
 MONTH_START = TARGET_DT.replace(day=1).strftime("%Y-%m-%dT00:00:00.000Z")
 
-# Correct endpoint for permit-type facilities (not the campground or inyo endpoint)
 AVAILABILITY_URL = (
     f"https://www.recreation.gov/api/permits/{PERMIT_ID}/availability/month"
     f"?start_date={MONTH_START}"
@@ -95,60 +75,73 @@ HEADERS = {
     "Referer": f"https://www.recreation.gov/permits/{PERMIT_ID}",
 }
 
-# The API keys availability by this ISO format
 TARGET_DATE_KEY = TARGET_DT.strftime("%Y-%m-%dT00:00:00Z")
 
 
 def check_availability() -> list[dict]:
-    """
-    Query the permit availability API and return available permit slots on TARGET_DATE.
-
-    Response shape:
-    {
-      "payload": {
-        "<division_id>": {
-          "name": "Beavertail 1",
-          "date_availability": {
-            "2026-05-24T00:00:00Z": {
-              "remaining": 2,
-              "total": 4,
-              "is_walkup": false
-            }
-          }
-        }
-      }
-    }
-    """
     available = []
     try:
         r = requests.get(AVAILABILITY_URL, headers=HEADERS, timeout=15)
         r.raise_for_status()
         data = r.json()
 
-        payload = data.get("payload", {})
-        log.debug(f"Got {len(payload)} divisions from API")
+        # ── DEBUG: print the full raw response structure on first run ──
+        log.info(f"DEBUG raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+        log.info(f"DEBUG response (first 1000 chars): {json.dumps(data)[:1000]}")
 
-        for division_id, division_data in payload.items():
-            division_name = division_data.get("name", division_id)
-            date_avail = division_data.get("date_availability", {})
-            slot = date_avail.get(TARGET_DATE_KEY, {})
-            remaining = slot.get("remaining", 0)
+        # Safely walk the response — handle both dict and unexpected types
+        payload = data.get("payload", data) if isinstance(data, dict) else data
 
-            log.debug(f"  {division_name}: remaining={remaining}")
+        log.info(f"DEBUG payload type: {type(payload).__name__}")
+        if isinstance(payload, dict):
+            log.info(f"DEBUG payload keys (first 5): {list(payload.keys())[:5]}")
+        elif isinstance(payload, list):
+            log.info(f"DEBUG payload is a list of {len(payload)} items")
+            log.info(f"DEBUG first item: {json.dumps(payload[0])[:500] if payload else 'empty'}")
 
-            if remaining and remaining > 0:
-                available.append({
-                    "division_id": division_id,
-                    "division_name": division_name,
-                    "remaining": remaining,
-                    "total": slot.get("total", "?"),
-                    "date": TARGET_DATE,
-                })
+        # Handle list-style payload
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                division_name = item.get("name", item.get("division_name", "Unknown"))
+                date_avail = item.get("date_availability", {})
+                slot = date_avail.get(TARGET_DATE_KEY, {})
+                remaining = slot.get("remaining", 0)
+                log.debug(f"  {division_name}: remaining={remaining}")
+                if remaining and remaining > 0:
+                    available.append({
+                        "division_name": division_name,
+                        "remaining": remaining,
+                        "total": slot.get("total", "?"),
+                        "date": TARGET_DATE,
+                    })
+
+        # Handle dict-style payload (keyed by division_id)
+        elif isinstance(payload, dict):
+            for division_id, division_data in payload.items():
+                if not isinstance(division_data, dict):
+                    log.info(f"DEBUG skipping division_id={division_id}, value type={type(division_data).__name__}, value={str(division_data)[:100]}")
+                    continue
+                division_name = division_data.get("name", division_id)
+                date_avail = division_data.get("date_availability", {})
+                slot = date_avail.get(TARGET_DATE_KEY, {})
+                remaining = slot.get("remaining", 0)
+                log.debug(f"  {division_name}: remaining={remaining}")
+                if remaining and remaining > 0:
+                    available.append({
+                        "division_name": division_name,
+                        "remaining": remaining,
+                        "total": slot.get("total", "?"),
+                        "date": TARGET_DATE,
+                    })
+        else:
+            log.error(f"Unexpected payload type: {type(payload).__name__} — value: {str(payload)[:300]}")
 
     except requests.HTTPError as e:
-        log.error(f"HTTP error {e.response.status_code}: {e}")
+        log.error(f"HTTP error {e.response.status_code}: {e.response.text[:300]}")
     except Exception as e:
-        log.error(f"Error checking availability: {e}")
+        log.exception(f"Error checking availability: {e}")
 
     return available
 
