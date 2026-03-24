@@ -5,13 +5,11 @@ Recreation.gov Permit Availability Checker — Railway Edition
 Monitors Ruby Horsethief Canyon (permit 74466) for campsite cancellations.
 
 Uses Resend (https://resend.com) for email — works on Railway free tier.
-SMTP is blocked by Railway; Resend sends over HTTPS instead.
 
 Required environment variables:
-  RESEND_API_KEY  — from resend.com dashboard
-  EMAIL_SENDER    — must be a verified address/domain in Resend
-                    (use onboarding@resend.dev to test before verifying your own)
-  EMAIL_RECEIVER  — where to send the alert
+  RESEND_API_KEY   — from resend.com dashboard
+  EMAIL_SENDER     — verified sender in Resend (or onboarding@resend.dev for testing)
+  EMAIL_RECEIVER   — where to send the alert
 
 Optional environment variables (defaults shown):
   PERMIT_ID        — 74466
@@ -31,7 +29,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
-TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-24")
+TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")
 
 RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
@@ -57,6 +55,7 @@ AVAILABILITY_URL = (
     f"https://www.recreation.gov/api/permits/{PERMIT_ID}/availability/month"
     f"?start_date={MONTH_START}"
 )
+CONTENT_URL = f"https://www.recreation.gov/api/permitcontent/{PERMIT_ID}"
 
 BOOKING_URL = (
     f"https://www.recreation.gov/permits/{PERMIT_ID}"
@@ -76,7 +75,29 @@ REC_GOV_HEADERS = {
 TARGET_DATE_KEY = TARGET_DT.strftime("%Y-%m-%dT00:00:00Z")
 
 
-def check_availability() -> list[dict]:
+def fetch_division_names() -> dict:
+    """
+    Fetch human-readable names for each division ID from the permitcontent endpoint.
+    Returns a dict like: {"74466000": "Beavertail 1", "74466001": "Black Rocks 1", ...}
+    """
+    try:
+        r = requests.get(CONTENT_URL, headers=REC_GOV_HEADERS, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        divisions = data.get("payload", {}).get("divisions", {})
+        names = {}
+        for div_id, div_data in divisions.items():
+            if isinstance(div_data, dict):
+                name = div_data.get("name", div_id)
+                names[str(div_id)] = name
+        log.info(f"Loaded {len(names)} division name(s): {names}")
+        return names
+    except Exception as e:
+        log.warning(f"Could not fetch division names, will use IDs instead: {e}")
+        return {}
+
+
+def check_availability(division_names: dict) -> list[dict]:
     available = []
     try:
         r = requests.get(AVAILABILITY_URL, headers=REC_GOV_HEADERS, timeout=15)
@@ -90,7 +111,8 @@ def check_availability() -> list[dict]:
         for division_id, division_data in divisions.items():
             if not isinstance(division_data, dict):
                 continue
-            division_name = division_data.get("name", division_id)
+            # Look up human-readable name, fall back to ID
+            division_name = division_names.get(str(division_id), str(division_id))
             date_avail    = division_data.get("date_availability", {})
             slot          = date_avail.get(TARGET_DATE_KEY, {})
             remaining     = slot.get("remaining", 0)
@@ -128,7 +150,6 @@ def send_email(available_slots: list[dict]):
         "",
         f"(Checked at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC)",
     ]
-    body = "\n".join(lines)
 
     try:
         r = requests.post(
@@ -141,7 +162,7 @@ def send_email(available_slots: list[dict]):
                 "from": EMAIL_SENDER,
                 "to": [EMAIL_RECEIVER],
                 "subject": subject,
-                "text": body,
+                "text": "\n".join(lines),
             },
             timeout=15,
         )
@@ -160,12 +181,15 @@ def run():
     log.info(f"  Alert to    : {EMAIL_RECEIVER}")
     log.info("=" * 55)
 
+    # Fetch division names once at startup
+    division_names = fetch_division_names()
+
     check_count = 0
     while True:
         check_count += 1
         log.info(f"Check #{check_count} — querying availability...")
 
-        available = check_availability()
+        available = check_availability(division_names)
 
         if available:
             log.info(f"🎉 AVAILABILITY FOUND! {len(available)} slot(s):")
