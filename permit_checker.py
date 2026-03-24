@@ -2,7 +2,8 @@
 """
 Recreation.gov Permit Availability Checker — Railway Edition
 =============================================================
-All secrets are read from environment variables (set in Railway dashboard).
+Monitors Ruby Horsethief Canyon (permit 74466) for campsite cancellations.
+Uses the campground availability API: /api/camps/availability/campground/{id}/month
 
 Required environment variables:
   EMAIL_SENDER    — Gmail address sending the alert
@@ -10,10 +11,10 @@ Required environment variables:
   EMAIL_RECEIVER  — Where to send the alert
 
 Optional environment variables (defaults shown):
-  PERMIT_ID       — 74466
-  TARGET_DATE     — 2026-05-24
-  CHECK_INTERVAL  — 300  (seconds)
-  STOP_AFTER_FOUND— false
+  PERMIT_ID        — 74466
+  TARGET_DATE      — 2026-05-21
+  CHECK_INTERVAL   — 300  (seconds)
+  STOP_AFTER_FOUND — false
 """
 
 import os
@@ -30,15 +31,15 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
-TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")
+TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-24")   # YYYY-MM-DD
 
-EMAIL_SENDER   = os.environ["EMAIL_SENDER"]    # Required — will crash loudly if missing
-EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]  # Required
-EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]  # Required
+EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
+EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
+EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
 SMTP_HOST      = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT      = int(os.environ.get("SMTP_PORT", "587"))
 
-CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "120"))
+CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "300"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
 
 # ─────────────────────────────────────────────
@@ -47,20 +48,23 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler()],  # Railway captures stdout/stderr as logs
+    handlers=[logging.StreamHandler()],
 )
 log = logging.getLogger(__name__)
 
+# Ruby Horsethief uses the campground API, not the permit/inyo API.
+# The endpoint returns one month of per-campsite availability.
+TARGET_DT   = datetime.strptime(TARGET_DATE, "%Y-%m-%d")
+MONTH_START = TARGET_DT.replace(day=1).strftime("%Y-%m-%dT00:00:00.000Z")
+
 AVAILABILITY_URL = (
-    f"https://www.recreation.gov/api/permitinyo/{PERMIT_ID}/availability"
-    f"?start_date={TARGET_DATE}T00:00:00.000Z"
-    f"&end_date={TARGET_DATE}T00:00:00.000Z"
-    f"&commercial_acct=false"
+    f"https://www.recreation.gov/api/camps/availability/campground"
+    f"/{PERMIT_ID}/month?start_date={MONTH_START}"
 )
 
-AVAILABILITY_URL_V2 = (
-    f"https://www.recreation.gov/api/permits/{PERMIT_ID}/divisions/availability"
-    f"?start_date={TARGET_DATE}&end_date={TARGET_DATE}"
+BOOKING_URL = (
+    f"https://www.recreation.gov/permits/{PERMIT_ID}"
+    f"/registration/detailed-availability?date={TARGET_DATE}"
 )
 
 HEADERS = {
@@ -70,83 +74,75 @@ HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
-    "Referer": f"https://www.recreation.gov/permits/{PERMIT_ID}/registration/detailed-availability",
+    "Referer": f"https://www.recreation.gov/permits/{PERMIT_ID}",
 }
+
+# The API keys availability by this ISO format
+TARGET_DATE_KEY = TARGET_DT.strftime("%Y-%m-%dT00:00:00Z")
 
 
 def check_availability() -> list[dict]:
-    available = []
+    """
+    Query the campground availability API and return available campsites on TARGET_DATE.
 
-    # ── Try the Inyo-style endpoint first ──
+    Response shape:
+    {
+      "campsites": {
+        "<campsite_id>": {
+          "site": "Beavertail 1",
+          "availabilities": {
+            "2026-05-24T00:00:00Z": "Available"   // or "Reserved", "Not Available"
+          }
+        }
+      }
+    }
+    """
+    available = []
     try:
         r = requests.get(AVAILABILITY_URL, headers=HEADERS, timeout=15)
         r.raise_for_status()
         data = r.json()
 
-        payload = data.get("payload", data)
-        avail_block = payload.get("availability", {})
+        campsites = data.get("campsites", {})
+        log.debug(f"Got {len(campsites)} campsites from API")
 
-        for division_id, div_data in avail_block.items():
-            date_avail = div_data.get("date_availability", {})
-            for date_key, slot in date_avail.items():
-                if date_key.startswith(TARGET_DATE):
-                    remaining = slot.get("remaining", 0)
-                    if remaining and remaining > 0:
-                        available.append({
-                            "date": TARGET_DATE,
-                            "division": div_data.get("name", division_id),
-                            "remaining": remaining,
-                        })
-        if avail_block:
-            return available
+        for site_id, site_data in campsites.items():
+            availabilities = site_data.get("availabilities", {})
+            status = availabilities.get(TARGET_DATE_KEY, "")
+            site_name = site_data.get("site", site_id)
+
+            log.debug(f"  {site_name}: {status!r}")
+
+            if status == "Available":
+                available.append({
+                    "site_id": site_id,
+                    "site_name": site_name,
+                    "date": TARGET_DATE,
+                })
+
+    except requests.HTTPError as e:
+        log.error(f"HTTP error {e.response.status_code}: {e}")
     except Exception as e:
-        log.debug(f"Primary endpoint error: {e}")
-
-    # ── Fallback endpoint ──
-    try:
-        r = requests.get(AVAILABILITY_URL_V2, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-
-        def find_available(obj, path=""):
-            found = []
-            if isinstance(obj, dict):
-                remaining = obj.get("remaining", obj.get("available", 0))
-                if isinstance(remaining, (int, float)) and remaining > 0:
-                    found.append({
-                        "date": TARGET_DATE,
-                        "division": obj.get("name", obj.get("division_name", path)),
-                        "remaining": remaining,
-                    })
-                for k, v in obj.items():
-                    found.extend(find_available(v, k))
-            elif isinstance(obj, list):
-                for item in obj:
-                    found.extend(find_available(item, path))
-            return found
-
-        available = find_available(data)
-    except Exception as e:
-        log.debug(f"Fallback endpoint error: {e}")
+        log.error(f"Error checking availability: {e}")
 
     return available
 
 
-def send_email(available_slots: list[dict]):
-    subject = f"🏕️ PERMIT AVAILABLE — Recreation.gov #{PERMIT_ID} on {TARGET_DATE}"
+def send_email(available_sites: list[dict]):
+    subject = f"🏕️ CAMPSITE AVAILABLE — Ruby Horsethief on {TARGET_DATE}"
 
     lines = [
-        f"Good news! A permit has opened up for {TARGET_DATE}.",
+        f"Good news! A campsite has opened up for {TARGET_DATE} at Ruby Horsethief Canyon.",
         "",
-        "Available slots:",
+        "Available site(s):",
     ]
-    for slot in available_slots:
-        lines.append(f"  • {slot['division']}: {slot['remaining']} remaining")
+    for s in available_sites:
+        lines.append(f"  • {s['site_name']}")
 
     lines += [
         "",
         "Book NOW before it's gone:",
-        f"https://www.recreation.gov/permits/{PERMIT_ID}/registration/detailed-availability?date={TARGET_DATE}",
+        BOOKING_URL,
         "",
         f"(Checked at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC)",
     ]
@@ -170,9 +166,10 @@ def send_email(available_slots: list[dict]):
 
 def run():
     log.info("=" * 55)
-    log.info("Permit Checker started")
+    log.info("Ruby Horsethief Permit Checker started")
     log.info(f"  Permit ID   : {PERMIT_ID}")
     log.info(f"  Target date : {TARGET_DATE}")
+    log.info(f"  API URL     : {AVAILABILITY_URL}")
     log.info(f"  Check every : {CHECK_INTERVAL}s ({CHECK_INTERVAL // 60} min)")
     log.info(f"  Alert to    : {EMAIL_RECEIVER}")
     log.info("=" * 55)
@@ -182,22 +179,18 @@ def run():
         check_count += 1
         log.info(f"Check #{check_count} — querying availability...")
 
-        try:
-            available = check_availability()
-        except Exception as e:
-            log.warning(f"Unexpected error during check: {e}")
-            available = []
+        available = check_availability()
 
         if available:
-            log.info(f"🎉 AVAILABILITY FOUND! {len(available)} slot(s):")
-            for slot in available:
-                log.info(f"   {slot['division']} — {slot['remaining']} remaining")
+            log.info(f"🎉 AVAILABILITY FOUND! {len(available)} site(s):")
+            for s in available:
+                log.info(f"   {s['site_name']}")
             send_email(available)
             if STOP_AFTER_FOUND:
                 log.info("STOP_AFTER_FOUND=true — exiting.")
                 break
         else:
-            log.info(f"No availability. Next check in {CHECK_INTERVAL}s.")
+            log.info(f"No availability on {TARGET_DATE}. Next check in {CHECK_INTERVAL}s.")
 
         time.sleep(CHECK_INTERVAL)
 
