@@ -148,7 +148,7 @@ def send_email(available_slots: list[dict]):
             server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
         log.info(f"✅ Alert email sent to {EMAIL_RECEIVER}")
     except Exception as e:
-        log.error(f"Failed to send email: {e}")
+        log.exception(f"Failed to send email: {e}")
 
 
 def run():
