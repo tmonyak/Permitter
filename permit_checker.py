@@ -3,7 +3,26 @@
 Recreation.gov Permit Availability Checker — Railway Edition
 =============================================================
 Monitors Ruby Horsethief Canyon (permit 74466) for campsite cancellations.
-Uses the campground availability API: /api/camps/availability/campground/{id}/month
+
+Uses the standard permit availability endpoint:
+  /api/permits/{id}/availability/month?start_date=YYYY-MM-01T00:00:00.000Z
+
+Response shape:
+{
+  "payload": {
+    "<division_id>": {
+      "date_availability": {
+        "2026-05-24T00:00:00Z": {
+          "remaining": 2,
+          "total": 4,
+          "is_walkup": false,
+          ...
+        }
+      },
+      "name": "Beavertail 1"
+    }
+  }
+}
 
 Required environment variables:
   EMAIL_SENDER    — Gmail address sending the alert
@@ -12,7 +31,7 @@ Required environment variables:
 
 Optional environment variables (defaults shown):
   PERMIT_ID        — 74466
-  TARGET_DATE      — 2026-05-21
+  TARGET_DATE      — 2026-05-24
   CHECK_INTERVAL   — 300  (seconds)
   STOP_AFTER_FOUND — false
 """
@@ -39,7 +58,7 @@ EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
 SMTP_HOST      = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT      = int(os.environ.get("SMTP_PORT", "587"))
 
-CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "60"))
+CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "300"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
 
 # ─────────────────────────────────────────────
@@ -52,14 +71,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Ruby Horsethief uses the campground API, not the permit/inyo API.
-# The endpoint returns one month of per-campsite availability.
 TARGET_DT   = datetime.strptime(TARGET_DATE, "%Y-%m-%d")
 MONTH_START = TARGET_DT.replace(day=1).strftime("%Y-%m-%dT00:00:00.000Z")
 
+# Correct endpoint for permit-type facilities (not the campground or inyo endpoint)
 AVAILABILITY_URL = (
-    f"https://www.recreation.gov/api/camps/availability/campground"
-    f"/{PERMIT_ID}/month?start_date={MONTH_START}"
+    f"https://www.recreation.gov/api/permits/{PERMIT_ID}/availability/month"
+    f"?start_date={MONTH_START}"
 )
 
 BOOKING_URL = (
@@ -83,15 +101,19 @@ TARGET_DATE_KEY = TARGET_DT.strftime("%Y-%m-%dT00:00:00Z")
 
 def check_availability() -> list[dict]:
     """
-    Query the campground availability API and return available campsites on TARGET_DATE.
+    Query the permit availability API and return available permit slots on TARGET_DATE.
 
     Response shape:
     {
-      "campsites": {
-        "<campsite_id>": {
-          "site": "Beavertail 1",
-          "availabilities": {
-            "2026-05-24T00:00:00Z": "Available"   // or "Reserved", "Not Available"
+      "payload": {
+        "<division_id>": {
+          "name": "Beavertail 1",
+          "date_availability": {
+            "2026-05-24T00:00:00Z": {
+              "remaining": 2,
+              "total": 4,
+              "is_walkup": false
+            }
           }
         }
       }
@@ -103,20 +125,23 @@ def check_availability() -> list[dict]:
         r.raise_for_status()
         data = r.json()
 
-        campsites = data.get("campsites", {})
-        log.debug(f"Got {len(campsites)} campsites from API")
+        payload = data.get("payload", {})
+        log.debug(f"Got {len(payload)} divisions from API")
 
-        for site_id, site_data in campsites.items():
-            availabilities = site_data.get("availabilities", {})
-            status = availabilities.get(TARGET_DATE_KEY, "")
-            site_name = site_data.get("site", site_id)
+        for division_id, division_data in payload.items():
+            division_name = division_data.get("name", division_id)
+            date_avail = division_data.get("date_availability", {})
+            slot = date_avail.get(TARGET_DATE_KEY, {})
+            remaining = slot.get("remaining", 0)
 
-            log.debug(f"  {site_name}: {status!r}")
+            log.debug(f"  {division_name}: remaining={remaining}")
 
-            if status == "Available":
+            if remaining and remaining > 0:
                 available.append({
-                    "site_id": site_id,
-                    "site_name": site_name,
+                    "division_id": division_id,
+                    "division_name": division_name,
+                    "remaining": remaining,
+                    "total": slot.get("total", "?"),
                     "date": TARGET_DATE,
                 })
 
@@ -128,16 +153,16 @@ def check_availability() -> list[dict]:
     return available
 
 
-def send_email(available_sites: list[dict]):
-    subject = f"🏕️ CAMPSITE AVAILABLE — Ruby Horsethief on {TARGET_DATE}"
+def send_email(available_slots: list[dict]):
+    subject = f"🏕️ PERMIT AVAILABLE — Ruby Horsethief on {TARGET_DATE}"
 
     lines = [
-        f"Good news! A campsite has opened up for {TARGET_DATE} at Ruby Horsethief Canyon.",
+        f"Good news! A permit has opened up for {TARGET_DATE} at Ruby Horsethief Canyon.",
         "",
-        "Available site(s):",
+        "Available slots:",
     ]
-    for s in available_sites:
-        lines.append(f"  • {s['site_name']}")
+    for s in available_slots:
+        lines.append(f"  • {s['division_name']}: {s['remaining']} of {s['total']} remaining")
 
     lines += [
         "",
@@ -170,6 +195,7 @@ def run():
     log.info(f"  Permit ID   : {PERMIT_ID}")
     log.info(f"  Target date : {TARGET_DATE}")
     log.info(f"  API URL     : {AVAILABILITY_URL}")
+    log.info(f"  Date key    : {TARGET_DATE_KEY}")
     log.info(f"  Check every : {CHECK_INTERVAL}s ({CHECK_INTERVAL // 60} min)")
     log.info(f"  Alert to    : {EMAIL_RECEIVER}")
     log.info("=" * 55)
@@ -182,9 +208,9 @@ def run():
         available = check_availability()
 
         if available:
-            log.info(f"🎉 AVAILABILITY FOUND! {len(available)} site(s):")
+            log.info(f"🎉 AVAILABILITY FOUND! {len(available)} slot(s):")
             for s in available:
-                log.info(f"   {s['site_name']}")
+                log.info(f"   {s['division_name']} — {s['remaining']} remaining")
             send_email(available)
             if STOP_AFTER_FOUND:
                 log.info("STOP_AFTER_FOUND=true — exiting.")
