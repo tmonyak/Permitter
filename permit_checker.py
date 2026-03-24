@@ -4,10 +4,14 @@ Recreation.gov Permit Availability Checker — Railway Edition
 =============================================================
 Monitors Ruby Horsethief Canyon (permit 74466) for campsite cancellations.
 
+Uses Resend (https://resend.com) for email — works on Railway free tier.
+SMTP is blocked by Railway; Resend sends over HTTPS instead.
+
 Required environment variables:
-  EMAIL_SENDER    — Gmail address sending the alert
-  EMAIL_PASSWORD  — Gmail App Password (16 chars, no spaces)
-  EMAIL_RECEIVER  — Where to send the alert
+  RESEND_API_KEY  — from resend.com dashboard
+  EMAIL_SENDER    — must be a verified address/domain in Resend
+                    (use onboarding@resend.dev to test before verifying your own)
+  EMAIL_RECEIVER  — where to send the alert
 
 Optional environment variables (defaults shown):
   PERMIT_ID        — 74466
@@ -18,11 +22,8 @@ Optional environment variables (defaults shown):
 
 import os
 import requests
-import smtplib
 import time
 import logging
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 # ─────────────────────────────────────────────
@@ -32,11 +33,9 @@ from datetime import datetime
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
 TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")
 
+RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
-EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
 EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
-SMTP_HOST      = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT      = int(os.environ.get("SMTP_PORT", "587"))
 
 CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "300"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
@@ -64,7 +63,7 @@ BOOKING_URL = (
     f"/registration/detailed-availability?date={TARGET_DATE}"
 )
 
-HEADERS = {
+REC_GOV_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -80,14 +79,11 @@ TARGET_DATE_KEY = TARGET_DT.strftime("%Y-%m-%dT00:00:00Z")
 def check_availability() -> list[dict]:
     available = []
     try:
-        r = requests.get(AVAILABILITY_URL, headers=HEADERS, timeout=15)
+        r = requests.get(AVAILABILITY_URL, headers=REC_GOV_HEADERS, timeout=15)
         r.raise_for_status()
         data = r.json()
 
-        # Safely walk the response
-        payload = data.get("payload", {}) if isinstance(data, dict) else {}
-
-        # payload shape: {"permit_id": "74466", "next_available_date": "...", "availability": {...}}
+        payload   = data.get("payload", {})
         divisions = payload.get("availability", {})
         log.info(f"Found {len(divisions)} division(s) in availability block")
 
@@ -95,9 +91,9 @@ def check_availability() -> list[dict]:
             if not isinstance(division_data, dict):
                 continue
             division_name = division_data.get("name", division_id)
-            date_avail = division_data.get("date_availability", {})
-            slot = date_avail.get(TARGET_DATE_KEY, {})
-            remaining = slot.get("remaining", 0)
+            date_avail    = division_data.get("date_availability", {})
+            slot          = date_avail.get(TARGET_DATE_KEY, {})
+            remaining     = slot.get("remaining", 0)
             log.info(f"  {division_name}: remaining={remaining}")
             if remaining and remaining > 0:
                 available.append({
@@ -119,13 +115,12 @@ def send_email(available_slots: list[dict]):
     subject = f"🏕️ PERMIT AVAILABLE — Ruby Horsethief on {TARGET_DATE}"
 
     lines = [
-        f"Good news! A permit has opened up for {TARGET_DATE} at Ruby Horsethief Canyon.",
+        f"A permit has opened up for {TARGET_DATE} at Ruby Horsethief Canyon.",
         "",
         "Available slots:",
     ]
     for s in available_slots:
         lines.append(f"  • {s['division_name']}: {s['remaining']} of {s['total']} remaining")
-
     lines += [
         "",
         "Book NOW before it's gone:",
@@ -133,20 +128,25 @@ def send_email(available_slots: list[dict]):
         "",
         f"(Checked at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC)",
     ]
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_SENDER
-    msg["To"] = EMAIL_RECEIVER
-    msg.attach(MIMEText("\n".join(lines), "plain"))
+    body = "\n".join(lines)
 
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
-        log.info(f"✅ Alert email sent to {EMAIL_RECEIVER}")
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": EMAIL_SENDER,
+                "to": [EMAIL_RECEIVER],
+                "subject": subject,
+                "text": body,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        log.info(f"✅ Alert email sent to {EMAIL_RECEIVER} (id: {r.json().get('id')})")
     except Exception as e:
         log.exception(f"Failed to send email: {e}")
 
@@ -156,8 +156,6 @@ def run():
     log.info("Ruby Horsethief Permit Checker started")
     log.info(f"  Permit ID   : {PERMIT_ID}")
     log.info(f"  Target date : {TARGET_DATE}")
-    log.info(f"  API URL     : {AVAILABILITY_URL}")
-    log.info(f"  Date key    : {TARGET_DATE_KEY}")
     log.info(f"  Check every : {CHECK_INTERVAL}s ({CHECK_INTERVAL // 60} min)")
     log.info(f"  Alert to    : {EMAIL_RECEIVER}")
     log.info("=" * 55)
