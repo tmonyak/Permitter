@@ -21,7 +21,6 @@ import requests
 import smtplib
 import time
 import logging
-import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -31,7 +30,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
-TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-24")
+TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")
 
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]
@@ -85,58 +84,28 @@ def check_availability() -> list[dict]:
         r.raise_for_status()
         data = r.json()
 
-        # ── DEBUG: print the full raw response structure on first run ──
-        log.info(f"DEBUG raw response keys: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
-        log.info(f"DEBUG response (first 1000 chars): {json.dumps(data)[:1000]}")
+        # Safely walk the response
+        payload = data.get("payload", {}) if isinstance(data, dict) else {}
 
-        # Safely walk the response — handle both dict and unexpected types
-        payload = data.get("payload", data) if isinstance(data, dict) else data
+        # payload shape: {"permit_id": "74466", "next_available_date": "...", "availability": {...}}
+        divisions = payload.get("availability", {})
+        log.info(f"Found {len(divisions)} division(s) in availability block")
 
-        log.info(f"DEBUG payload type: {type(payload).__name__}")
-        if isinstance(payload, dict):
-            log.info(f"DEBUG payload keys (first 5): {list(payload.keys())[:5]}")
-        elif isinstance(payload, list):
-            log.info(f"DEBUG payload is a list of {len(payload)} items")
-            log.info(f"DEBUG first item: {json.dumps(payload[0])[:500] if payload else 'empty'}")
-
-        # Handle list-style payload
-        if isinstance(payload, list):
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-                division_name = item.get("name", item.get("division_name", "Unknown"))
-                date_avail = item.get("date_availability", {})
-                slot = date_avail.get(TARGET_DATE_KEY, {})
-                remaining = slot.get("remaining", 0)
-                log.debug(f"  {division_name}: remaining={remaining}")
-                if remaining and remaining > 0:
-                    available.append({
-                        "division_name": division_name,
-                        "remaining": remaining,
-                        "total": slot.get("total", "?"),
-                        "date": TARGET_DATE,
-                    })
-
-        # Handle dict-style payload (keyed by division_id)
-        elif isinstance(payload, dict):
-            for division_id, division_data in payload.items():
-                if not isinstance(division_data, dict):
-                    log.info(f"DEBUG skipping division_id={division_id}, value type={type(division_data).__name__}, value={str(division_data)[:100]}")
-                    continue
-                division_name = division_data.get("name", division_id)
-                date_avail = division_data.get("date_availability", {})
-                slot = date_avail.get(TARGET_DATE_KEY, {})
-                remaining = slot.get("remaining", 0)
-                log.debug(f"  {division_name}: remaining={remaining}")
-                if remaining and remaining > 0:
-                    available.append({
-                        "division_name": division_name,
-                        "remaining": remaining,
-                        "total": slot.get("total", "?"),
-                        "date": TARGET_DATE,
-                    })
-        else:
-            log.error(f"Unexpected payload type: {type(payload).__name__} — value: {str(payload)[:300]}")
+        for division_id, division_data in divisions.items():
+            if not isinstance(division_data, dict):
+                continue
+            division_name = division_data.get("name", division_id)
+            date_avail = division_data.get("date_availability", {})
+            slot = date_avail.get(TARGET_DATE_KEY, {})
+            remaining = slot.get("remaining", 0)
+            log.info(f"  {division_name}: remaining={remaining}")
+            if remaining and remaining > 0:
+                available.append({
+                    "division_name": division_name,
+                    "remaining": remaining,
+                    "total": slot.get("total", "?"),
+                    "date": TARGET_DATE,
+                })
 
     except requests.HTTPError as e:
         log.error(f"HTTP error {e.response.status_code}: {e.response.text[:300]}")
