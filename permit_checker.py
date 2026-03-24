@@ -29,7 +29,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
-TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")
+TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-24")
 
 RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
