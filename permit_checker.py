@@ -31,13 +31,13 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 PERMIT_ID    = os.environ.get("PERMIT_ID", "74466")
-TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-21")
+TARGET_DATE  = os.environ.get("TARGET_DATE", "2026-05-24")
 
 RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
 EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
 
-CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "300"))
+CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "120"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
 
 # ─────────────────────────────────────────────
