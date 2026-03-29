@@ -34,12 +34,12 @@ RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
 EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
 
-CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "300"))
+CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "120"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
 
 # Map of date -> set of site names to watch for cancellations
 WATCH = {
-    "2026-05-24": {
+    "2026-05-25": {
         "Knowles 1",
         "May Flats",
         "Black Rocks 1",
