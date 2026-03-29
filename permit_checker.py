@@ -52,7 +52,6 @@ WATCH = {
         "Black Rocks 8",
         "Black Rocks 9",
         "Dog Island",
-        "Mee 3",
     },
     "2026-05-23": {
         "Cottonwood 5",
