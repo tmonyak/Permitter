@@ -39,7 +39,7 @@ STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
 
 # Map of date -> set of site names to watch for cancellations
 WATCH = {
-    "2026-05-25": {
+    "2026-05-24": {
         "Knowles 1",
         "May Flats",
         "Black Rocks 1",
@@ -52,6 +52,7 @@ WATCH = {
         "Black Rocks 8",
         "Black Rocks 9",
         "Dog Island",
+        "Mee 3",
     },
     "2026-05-23": {
         "Cottonwood 5",
