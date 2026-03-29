@@ -37,6 +37,22 @@ EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
 
 CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "120"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
+# Only alert for cancellations at these specific sites
+WATCHED_SITES = {
+    "Knowles 1",
+    "May Flats",
+    "Black Rocks 1",
+    "Black Rocks 2",
+    "Black Rocks 3",
+    "Black Rocks 4",
+    "Black Rocks 5",
+    "Black Rocks 6",
+    "Black Rocks 7",
+    "Black Rocks 8",
+    "Black Rocks 9",
+    "Dog Island",
+}
+
 
 # ─────────────────────────────────────────────
 
@@ -117,7 +133,7 @@ def check_availability(division_names: dict) -> list[dict]:
             slot          = date_avail.get(TARGET_DATE_KEY, {})
             remaining     = slot.get("remaining", 0)
             log.info(f"  {division_name}: remaining={remaining}")
-            if remaining and remaining > 0:
+            if remaining and remaining > 0 and division_name in WATCHED_SITES:
                 available.append({
                     "division_name": division_name,
                     "remaining": remaining,
