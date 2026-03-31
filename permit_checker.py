@@ -14,7 +14,7 @@ Required environment variables:
 
 Optional environment variables (defaults shown):
   PERMIT_ID        — 74466
-  CHECK_INTERVAL   — 120 (seconds)
+  CHECK_INTERVAL   — 300  (seconds)
   STOP_AFTER_FOUND — false
 """
 
@@ -32,18 +32,14 @@ PERMIT_ID = os.environ.get("PERMIT_ID", "74466")
 
 RESEND_API_KEY = os.environ["RESEND_API_KEY"]
 EMAIL_SENDER   = os.environ["EMAIL_SENDER"]
-EMAIL_RECEIVERS = [
-    os.environ["EMAIL_RECEIVER"],       # primary — set in Railway env vars
-    "Haydensiekman@gmail.com",
-    "chad@rosysoil.com",
-]
+EMAIL_RECEIVER = os.environ["EMAIL_RECEIVER"]
 
 CHECK_INTERVAL   = int(os.environ.get("CHECK_INTERVAL", "120"))
 STOP_AFTER_FOUND = os.environ.get("STOP_AFTER_FOUND", "false").lower() == "true"
 
 # Map of date -> set of site names to watch for cancellations
 WATCH = {
-    "2026-05-25": {
+    "2026-05-24": {
         "Knowles 1",
         "May Flats",
         "Black Rocks 1",
@@ -190,14 +186,14 @@ def send_email(available_slots: list[dict]):
             },
             json={
                 "from": EMAIL_SENDER,
-                "to": [EMAIL_RECEIVERS],
+                "to": [EMAIL_RECEIVER],
                 "subject": subject,
                 "text": "\n".join(lines),
             },
             timeout=15,
         )
         r.raise_for_status()
-        log.info(f"✅ Alert email sent to {EMAIL_RECEIVERS} (id: {r.json().get('id')})")
+        log.info(f"✅ Alert email sent to {EMAIL_RECEIVER} (id: {r.json().get('id')})")
     except Exception as e:
         log.exception(f"Failed to send email: {e}")
 
@@ -209,7 +205,7 @@ def run():
     for date, sites in sorted(WATCH.items()):
         log.info(f"  Watching {date}: {', '.join(sorted(sites))}")
     log.info(f"  Check every : {CHECK_INTERVAL}s ({CHECK_INTERVAL // 60} min)")
-    log.info(f"  Alert to    : {EMAIL_RECEIVERS}")
+    log.info(f"  Alert to    : {EMAIL_RECEIVER}")
     log.info("=" * 55)
 
     division_names = fetch_division_names()
